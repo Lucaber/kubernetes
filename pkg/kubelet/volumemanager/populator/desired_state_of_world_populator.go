@@ -177,17 +177,6 @@ func (dswp *desiredStateOfWorldPopulator) populatorLoop() {
 // Iterate through all pods and add to desired state of world if they don't
 // exist but should
 func (dswp *desiredStateOfWorldPopulator) findAndAddNewPods() {
-	// Map unique pod name to outer volume name to MountedVolume.
-	mountedVolumesForPod := make(map[volumetypes.UniquePodName]map[string]cache.MountedVolume)
-	for _, mountedVolume := range dswp.actualStateOfWorld.GetMountedVolumes() {
-		mountedVolumes, exist := mountedVolumesForPod[mountedVolume.PodName]
-		if !exist {
-			mountedVolumes = make(map[string]cache.MountedVolume)
-			mountedVolumesForPod[mountedVolume.PodName] = mountedVolumes
-		}
-		mountedVolumes[mountedVolume.OuterVolumeSpecName] = mountedVolume
-	}
-
 	for _, pod := range dswp.podManager.GetPods() {
 		// Keep consistency of adding pod during reconstruction
 		if dswp.hasAddedPods && dswp.podStateProvider.ShouldPodContainersBeTerminating(pod.UID) {
@@ -201,7 +190,7 @@ func (dswp *desiredStateOfWorldPopulator) findAndAddNewPods() {
 			continue
 		}
 
-		dswp.processPodVolumes(pod, mountedVolumesForPod)
+		dswp.processPodVolumes(pod)
 	}
 }
 
@@ -285,7 +274,7 @@ func (dswp *desiredStateOfWorldPopulator) findAndRemoveDeletedPods() {
 // desired state of the world.
 func (dswp *desiredStateOfWorldPopulator) processPodVolumes(
 	pod *v1.Pod,
-	mountedVolumesForPod map[volumetypes.UniquePodName]map[string]cache.MountedVolume) {
+) {
 	if pod == nil {
 		return
 	}
@@ -326,7 +315,7 @@ func (dswp *desiredStateOfWorldPopulator) processPodVolumes(
 			klog.V(4).InfoS("Added volume to desired state", "pod", klog.KObj(pod), "volumeName", podVolume.Name, "volumeSpecName", volumeSpec.Name())
 		}
 
-		dswp.checkVolumeFSResize(pod, podVolume, pvc, volumeSpec, uniquePodName, mountedVolumesForPod)
+		dswp.checkVolumeFSResize(pod, podVolume, pvc, volumeSpec, uniquePodName)
 	}
 
 	// some of the volume additions may have failed, should not mark this pod as fully processed
@@ -355,8 +344,7 @@ func (dswp *desiredStateOfWorldPopulator) checkVolumeFSResize(
 	podVolume v1.Volume,
 	pvc *v1.PersistentVolumeClaim,
 	volumeSpec *volume.Spec,
-	uniquePodName volumetypes.UniquePodName,
-	mountedVolumesForPod map[volumetypes.UniquePodName]map[string]cache.MountedVolume) {
+	uniquePodName volumetypes.UniquePodName) {
 
 	// if a volumeSpec does not have PV or has InlineVolumeSpecForCSIMigration set or pvc is nil
 	// we can't resize the volume and hence resizing should be skipped.
@@ -365,13 +353,14 @@ func (dswp *desiredStateOfWorldPopulator) checkVolumeFSResize(
 		return
 	}
 
-	uniqueVolumeName, exist := getUniqueVolumeName(uniquePodName, podVolume.Name, mountedVolumesForPod)
+	volume, exist := dswp.actualStateOfWorld.GetMountedVolumeForPodByOuterVolumeSpecName(uniquePodName, podVolume.Name)
 	if !exist {
 		// Volume not exist in ASW, we assume it hasn't been mounted yet. If it needs resize,
 		// it will be handled as offline resize(if it indeed hasn't been mounted yet),
 		// or online resize in subsequent loop(after we confirm it has been mounted).
 		return
 	}
+	uniqueVolumeName := volume.VolumeName
 	// volumeSpec.ReadOnly is the value that determines if volume could be formatted when being mounted.
 	// This is the same flag that determines filesystem resizing behaviour for offline resizing and hence
 	// we should use it here. This value comes from Pod.spec.volumes.persistentVolumeClaim.readOnly.
